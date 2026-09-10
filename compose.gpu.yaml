@@ -1,0 +1,32 @@
+# Two independent replicas, one model copy per GPU. Linux + NVIDIA Container Toolkit.
+services:
+  api:
+    environment: {BACKEND: vllm}
+  worker:
+    environment: {BACKEND: vllm}
+  vllm-0:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.10.2}
+    command: [--model, '${MODEL:-Qwen/Qwen2.5-7B-Instruct}', --enable-prefix-caching, --max-model-len, '4096', --max-num-seqs, '${MAX_NUM_SEQS:-32}', --gpu-memory-utilization, '0.90']
+    shm_size: 4gb
+    volumes: [hf-cache:/root/.cache/huggingface]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+  vllm-1:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.10.2}
+    command: [--model, '${MODEL:-Qwen/Qwen2.5-7B-Instruct}', --enable-prefix-caching, --max-model-len, '4096', --max-num-seqs, '${MAX_NUM_SEQS:-32}', --gpu-memory-utilization, '0.90']
+    shm_size: 4gb
+    volumes: [hf-cache:/root/.cache/huggingface]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+volumes:
+  hf-cache:

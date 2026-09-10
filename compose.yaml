@@ -1,0 +1,42 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, 'yes', --maxmemory-policy, noeviction]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+  api:
+    build: .
+    environment: &env
+      BACKEND: ${BACKEND:-mock}
+      MODEL: ${MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      REDIS_URL: redis://redis:6379/0
+      VLLM_URLS: http://vllm-0:8000,http://vllm-1:8000
+      API_KEY: ${API_KEY:-}
+      MAX_INFLIGHT: ${MAX_INFLIGHT:-32}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-8}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    ports: [127.0.0.1:8000:8000]
+    depends_on:
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+  worker:
+    build: .
+    command: [python, -m, serving.worker]
+    environment: *env
+    depends_on:
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    volumes: [./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro]
+    ports: [127.0.0.1:9090:9090]
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    environment: {COLLECTOR_OTLP_ENABLED: 'true'}
+    ports: [127.0.0.1:16686:16686]
+volumes:
+  redis-data:

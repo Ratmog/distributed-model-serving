@@ -1,0 +1,2 @@
+{"messages":[{"role":"user","content":"Explain continuous batching in two sentences."}],"max_tokens":128}
+{"messages":[{"role":"user","content":"What is prefix caching?"}],"max_tokens":128}

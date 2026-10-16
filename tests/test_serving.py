@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -138,4 +139,80 @@ async def test_worker_failure_retains_lease_for_retry(queue):
     assert await process_one(queue, engine)
     assert (await queue.get(jid))["status"] == "running"
     assert int(await queue.redis.get(queue.active)) == 1
+    await engine.close()
+
+
+async def test_busy_worker_requeues_without_spending_attempt(queue):
+    engine = Engine(Settings(max_inflight=1))
+    engine.active = 1  # simulate a saturated process
+    jid = await queue.submit(request())
+    assert await process_one(queue, engine)
+    job = await queue.get(jid)
+    assert job["status"] == "queued" and job["attempts"] == 0
+    assert await queue.redis.zcard(queue.leases) == 0
+    engine.active = 0
+    assert await process_one(queue, engine)
+    job = await queue.get(jid)
+    assert job["status"] == "succeeded" and job["attempts"] == 1
+    await engine.close()
+
+
+async def test_release_is_fenced(queue):
+    jid = await queue.submit(request())
+    _, token, _ = await queue.claim(now=0)
+    assert not await queue.release(jid, "stale-token")
+    assert await queue.release(jid, token)
+    assert not await queue.release(jid, token)
+
+
+def parse_sse(body):
+    events = [line[6:] for line in body.splitlines() if line.startswith("data: ")]
+    assert events[-1] == "[DONE]"
+    return [json.loads(e) for e in events[:-1]]
+
+
+def test_api_streams_mock_and_rejects_streaming_jobs():
+    with TestClient(create_app(Settings(), redis=FakeRedis(decode_responses=True))) as client:
+        data = {**request("one two three").model_dump(), "stream": True}
+        r = client.post("/v1/chat/completions", json=data)
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        chunks = parse_sse(r.text)
+        text = "".join(c["choices"][0]["delta"]["content"] for c in chunks if c["choices"])
+        assert text == "Mock response: one two three"
+        assert chunks[-1]["usage"]["completion_tokens"] == 5
+        assert client.post("/v1/jobs", json=data).status_code == 422
+        assert "serving_ttft_seconds_count" in client.get("/metrics").text
+
+
+async def test_vllm_stream_relay_and_cleanup():
+    sent = []
+    upstream = (
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n'
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n'
+        'data: {"choices":[],"usage":{"completion_tokens":1}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(req):
+        sent.append(json.loads(req.content))
+        return httpx.Response(200, text=upstream, headers={"content-type": "text/event-stream"})
+
+    engine = Engine(Settings(backend="vllm", urls=["http://a"]), httpx.MockTransport(handler))
+    chunks = [c async for c in await engine.stream(request())]
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert sent[0]["stream"] is True and sent[0]["stream_options"] == {"include_usage": True}
+    assert engine.active == 0 and engine.loads == [0]
+    await engine.close()
+
+
+async def test_vllm_stream_connect_failure_is_503_not_broken_stream():
+    engine = Engine(
+        Settings(backend="vllm", urls=["http://a"]),
+        httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+    with pytest.raises(BackendUnavailable):
+        await engine.stream(request())
+    assert engine.active == 0 and engine.loads == [0]
+    assert engine.cooldown[0] > 0
     await engine.close()

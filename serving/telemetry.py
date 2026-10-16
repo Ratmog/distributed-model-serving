@@ -9,6 +9,11 @@ LATENCY = Histogram(
     "End-to-end inference time",
     buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120),
 )
+TTFT = Histogram(
+    "serving_ttft_seconds",
+    "Gateway-observed time to first content token (streaming requests only)",
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),
+)
 TOKENS = Counter("serving_output_tokens_total", "Backend-reported output tokens", ["backend"])
 INFLIGHT = Gauge("serving_inflight", "In-flight inference requests")
 JOBS = Counter("serving_jobs_total", "Worker outcomes", ["outcome"])

@@ -2,6 +2,7 @@ import hmac
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -65,6 +66,12 @@ def create_app(settings=None, redis=None, engine=None):
     @app.post("/v1/chat/completions", dependencies=[Depends(auth)])
     async def generate(request: Generate):
         try:
+            if request.stream:
+                return StreamingResponse(
+                    await app.state.engine.stream(request),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache"},
+                )
             return await app.state.engine.generate(request)
         except Busy:
             raise HTTPException(429, "Inference capacity reached", headers={"Retry-After": "1"})
@@ -75,6 +82,8 @@ def create_app(settings=None, redis=None, engine=None):
     async def submit(
         request: Generate, idempotency_key: str | None = Header(default=None, max_length=128)
     ):
+        if request.stream:
+            raise HTTPException(422, "Streaming is not supported for asynchronous jobs")
         try:
             jid = await app.state.queue.submit(request, idempotency_key)
             return {"id": jid, "status_url": "/v1/jobs/" + jid}

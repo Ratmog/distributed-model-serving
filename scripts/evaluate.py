@@ -4,11 +4,15 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
+import sys
 import time
 from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _auth import auth_headers
+from gpu_monitor import GpuSampler
 
 
 async def run(args):
@@ -17,50 +21,54 @@ async def run(args):
     if not cases or len({c["id"] for c in cases}) != len(cases):
         raise ValueError("Dataset must be nonempty with unique IDs")
     rows = []
-    async with httpx.AsyncClient(
-        base_url=args.url,
-        timeout=120,
-        headers={"Authorization": "Bearer " + os.getenv("API_KEY", "")},
-    ) as client:
-        for case in cases:
-            start = time.perf_counter()
-            try:
-                r = await client.post(
-                    "/v1/chat/completions",
-                    json={
-                        "messages": [{"role": "user", "content": case["prompt"]}],
-                        "temperature": 0,
-                        "max_tokens": 32,
-                    },
-                )
-                r.raise_for_status()
-                data = r.json()
-                answer = data["choices"][0]["message"]["content"].strip()
-                rows.append(
-                    {
-                        "id": case["id"],
-                        "answer": answer,
-                        "correct": answer.casefold() == str(case["expected"]).strip().casefold(),
-                        "model": data["model"],
-                        "seconds": time.perf_counter() - start,
-                        "output_tokens": data["usage"]["completion_tokens"],
-                    }
-                )
-            except (httpx.HTTPError, KeyError, ValueError):
-                rows.append(
-                    {
-                        "id": case["id"],
-                        "correct": False,
-                        "error": True,
-                        "seconds": time.perf_counter() - start,
-                    }
-                )
+    with GpuSampler() as sampler:
+        async with httpx.AsyncClient(
+            base_url=args.url,
+            timeout=120,
+            headers=auth_headers(),
+        ) as client:
+            for case in cases:
+                start = time.perf_counter()
+                try:
+                    r = await client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "messages": [{"role": "user", "content": case["prompt"]}],
+                            "temperature": 0,
+                            "max_tokens": 32,
+                        },
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    answer = data["choices"][0]["message"]["content"].strip()
+                    rows.append(
+                        {
+                            "id": case["id"],
+                            "answer": answer,
+                            "correct": answer.casefold()
+                            == str(case["expected"]).strip().casefold(),
+                            "model": data["model"],
+                            "seconds": time.perf_counter() - start,
+                            "output_tokens": data["usage"]["completion_tokens"],
+                        }
+                    )
+                except (httpx.HTTPError, KeyError, ValueError):
+                    rows.append(
+                        {
+                            "id": case["id"],
+                            "correct": False,
+                            "error": True,
+                            "seconds": time.perf_counter() - start,
+                        }
+                    )
     result = {
         "dataset_sha256": hashlib.sha256(raw).hexdigest(),
         "cases": len(cases),
         "accuracy": sum(row["correct"] for row in rows) / len(rows),
         "mean_latency_seconds": sum(row["seconds"] for row in rows) / len(rows),
         "errors": sum(bool(row.get("error")) for row in rows),
+        "models": sorted({row["model"] for row in rows if "model" in row}),
+        "gpu": sampler.summary(),
         "rows": rows,
     }
     failed = result["errors"] > 0 or result["accuracy"] < args.min_accuracy
@@ -86,6 +94,10 @@ async def run(args):
             mlflow.log_metrics(
                 {k: result[k] for k in ("accuracy", "mean_latency_seconds", "errors")}
             )
+            if result["gpu"].get("available"):
+                mlflow.log_metric(
+                    "gpu_peak_memory_mib", max(g["peak_memory_mib"] for g in result["gpu"]["gpus"])
+                )
             mlflow.log_artifact(args.output)
     print(json.dumps({k: v for k, v in result.items() if k != "rows"}, indent=2))
     return failed

@@ -4,11 +4,14 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
+import sys
 import time
 from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _auth import auth_headers
 
 
 async def run(args):
@@ -19,7 +22,7 @@ async def run(args):
     async with httpx.AsyncClient(
         base_url=args.url,
         timeout=120,
-        headers={"Authorization": "Bearer " + os.getenv("API_KEY", "")},
+        headers=auth_headers(),
     ) as client:
         ids = []
         for i, payload in enumerate(requests):

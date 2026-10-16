@@ -22,8 +22,15 @@ async def process_one(queue, engine):
     with tracer.start_as_current_span("job.process"):
         try:
             result = await engine.generate(Generate.model_validate(payload))
-        except (TimeoutError, BackendUnavailable, Busy):
-            # Leave the lease for bounded retry by recovery.
+        except Busy:
+            # Local admission limit: no replica saw the request, so requeue now
+            # without spending a retry attempt or waiting for the lease to expire.
+            await queue.release(jid, token)
+            JOBS.labels("requeued").inc()
+            await asyncio.sleep(0.05)
+            return True
+        except (TimeoutError, BackendUnavailable):
+            # The replica may still be executing; leave the lease for bounded retry by recovery.
             JOBS.labels("retry").inc()
             return True
         except Exception:

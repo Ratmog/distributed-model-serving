@@ -2,7 +2,7 @@
 
 A Python inference platform for learning, load testing, and measuring LLM serving behavior. FastAPI handles synchronous requests and asynchronous jobs; Redis coordinates workers; two independent vLLM replicas serve a 7B model on separate GPUs.
 
-**Status:** runnable implementation with automated CPU tests. The default backend is a clearly labeled mock. GPU deployment and performance must be measured on your hardware. No claimed 420→690 tokens/s improvement or production usage is implied by this repository.
+**Status:** runnable implementation with automated CPU tests. The default backend is a clearly labeled mock. Measured GPU results live in [`benchmarks/`](benchmarks/) with full hardware and settings manifests; only numbers found there are claimed. To produce them, follow the [GPU benchmark runbook](docs/benchmarking.md); it covers a 2-GPU VM with Compose and GPU pods without Docker (`scripts/run_without_docker.sh`).
 
 ## Architecture
 
@@ -19,10 +19,11 @@ flowchart TD
     Workers --> Obs
 ```
 
-- Nonstreaming chat endpoint with per-process admission limits, timeouts, least-inflight routing, and failed-replica cooldown.
-- Redis atomic queue admission, idempotent submissions, expiring leases, bounded crash retries, and token-fenced completion.
+- Chat endpoint (streaming via SSE or nonstreaming) with per-process admission limits, timeouts, least-inflight routing, and failed-replica cooldown. Capacity and connect failures return 429/503 before a stream starts.
+- Redis atomic queue admission, idempotent submissions, expiring leases, bounded crash retries, and token-fenced completion. Jobs blocked by local back-pressure are requeued immediately without spending a retry.
 - vLLM continuous batching and prefix caching; explicit warmup requests to both replicas.
-- Prometheus request, latency, output-token, in-flight, queue, and worker metrics. Optional OpenTelemetry inference and job spans exported to Jaeger.
+- Prometheus request, latency, time-to-first-token, output-token, in-flight, queue, and worker metrics. Optional OpenTelemetry inference and job spans exported to Jaeger.
+- Benchmark sweep with a reproducibility manifest, client-side TTFT/TPOT, nvidia-smi utilization and memory sampling, $/1M-token cost, and like-for-like run comparison.
 - Batch client, closed-loop load generator, 200-case synthetic regression suite, baseline gates, and optional MLflow logging.
 
 ## Quick start: CPU / Mac demo
@@ -80,14 +81,14 @@ Health readiness requires Redis plus at least one responsive replica. It does no
 
 | Endpoint | Behavior |
 |---|---|
-| `POST /v1/chat/completions` | Nonstreaming generation; 429 at capacity, 503 on backend failure/timeout |
+| `POST /v1/chat/completions` | Generation; `"stream": true` for SSE chunks ending in a usage chunk and `[DONE]`. 429 at capacity, 503 on backend failure/timeout |
 | `POST /v1/jobs` | Returns 202 with job ID; optional `Idempotency-Key` header |
 | `GET /v1/jobs/{id}` | Queued, running, succeeded, or failed; result when terminal |
 | `GET /health/live` | Process liveness |
 | `GET /health/ready` | Redis and replica availability |
 | `GET /metrics` | Prometheus exposition |
 
-Request fields: `messages`, `max_tokens` (1–2048), and `temperature` (0–2). The server selects the model. This is a chat-shaped API, not full OpenAI API compatibility; streaming, tool calls, and client-selected models are not implemented. Message character bounds do not guarantee the model's token context limit; oversized tokenized prompts can be rejected by vLLM.
+Request fields: `messages`, `max_tokens` (1–2048), `temperature` (0–2), and `stream`. The server selects the model. This is a chat-shaped API, not full OpenAI API compatibility; tool calls and client-selected models are not implemented, and jobs cannot stream. An error after a stream has started is sent as a final `{"error": ...}` event. Message character bounds do not guarantee the model's token context limit; oversized tokenized prompts can be rejected by vLLM.
 
 Idempotency keys are scoped to the whole deployment. Reusing a key with a different payload returns 409. Active jobs remain until completion or retry exhaustion; terminal jobs and their keys expire after 24 hours by default. Resubmitting after expiry can execute again.
 
@@ -102,12 +103,16 @@ pip install -e '.[eval]'
 python scripts/evaluate.py --mlflow
 
 # Exercise overload and record failures, not just successful latency:
-python scripts/load_test.py --requests 1000 --concurrency 100 --output results/load-100.json
+python scripts/load_test.py --requests 1000 --concurrency 100 --stream --output results/load-100.json
+
+# Full concurrency sweep on the GPU host (see docs/benchmarking.md):
+python scripts/benchmark.py --label qwen7b-l4x2-seqs32 --gpu-hourly-cost 0.80
+python scripts/compare.py benchmarks/<baseline> benchmarks/<candidate>
 ```
 
 Evaluation uses 200 synthetic addition prompts and exact-answer matching. It tests the regression pipeline, not broad reasoning, answer faithfulness, or real-world model quality. Replace it with a reviewed domain dataset before making those claims. Baseline comparisons require identical dataset hashes and gate accuracy loss and mean-latency growth. MLflow records quality, latency, model names, and output artifacts; it does not calculate infrastructure cost or GPU peak memory.
 
-Load results include successful requests/s, backend-reported output tokens/s, success-only p50/p95/p99 end-to-end latency, and failure counts/rate. The generator is closed-loop and does not measure time-to-first-token or open-loop arrival behavior. It exits nonzero above the allowed error rate. For comparative runs record GPU/driver, vLLM image, model revision, input/output lengths, batch settings, replica count, and warmup conditions. See [benchmark protocol](docs/benchmarking.md).
+Load results include successful requests/s, backend-reported output tokens/s, success-only p50/p95/p99 end-to-end latency, failure counts/rate, and with `--stream`, client-side TTFT and time per output token. The generator is closed-loop and does not model open-loop arrival behavior. It exits nonzero above the allowed error rate. For comparative runs record GPU/driver, vLLM image, model revision, input/output lengths, batch settings, replica count, and warmup conditions. See [benchmark protocol](docs/benchmarking.md).
 
 ## Operational boundaries
 
@@ -115,4 +120,4 @@ This is a single-tenant reference platform. Capacity is bounded globally for que
 
 The default Compose setup has one worker process. Scale with `docker compose up -d --scale worker=2`; Prometheus's static worker target is intended for the single-worker demo and needs service discovery for reliable per-replica monitoring after scaling. GPU metrics are exposed by vLLM; the application does not measure physical peak VRAM. vLLM scrape targets being down in CPU mode is expected.
 
-No external deployment, paid GPU rental, or measured GPU benchmark is performed by this repository. CI exercises tests, lint, Compose validation, and image construction; it does not run GPU inference.
+CI exercises tests, lint, Compose validation, and image construction; it does not run GPU inference. GPU numbers come only from manual runs committed under `benchmarks/`.

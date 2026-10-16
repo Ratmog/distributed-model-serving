@@ -44,6 +44,16 @@ redis.call('ZREM', KEYS[2], ARGV[5])
 redis.call('DECR', KEYS[3])
 return 1
 """
+RELEASE = """
+if redis.call('HGET', KEYS[1], 'token') ~= ARGV[1] then return 0 end
+if redis.call('HGET', KEYS[1], 'status') ~= 'running' then return 0 end
+redis.call('HSET', KEYS[1], 'status', 'queued')
+redis.call('HDEL', KEYS[1], 'token')
+redis.call('HINCRBY', KEYS[1], 'attempts', -1)
+redis.call('ZREM', KEYS[2], ARGV[2])
+redis.call('LPUSH', KEYS[3], ARGV[2])
+return 1
+"""
 RECOVER = """
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
 for _, id in ipairs(expired) do
@@ -131,6 +141,15 @@ class JobQueue:
             json.dumps(result),
             self.settings.result_ttl,
             jid,
+        )
+
+    async def release(self, jid, token):
+        """Return a claimed job to the front of the queue without consuming an attempt.
+
+        For local back-pressure only (the work never reached a replica). Fenced like finish.
+        """
+        return await self.redis.eval(
+            RELEASE, 3, self.prefix + jid, self.leases, self.waiting, token, jid
         )
 
     async def recover(self, now=None):

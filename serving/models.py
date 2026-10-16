@@ -12,6 +12,7 @@ class Generate(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=32)
     max_tokens: int = Field(default=128, ge=1, le=2048)
     temperature: float = Field(default=0, ge=0, le=2)
+    stream: bool = False
 
     @model_validator(mode="after")
     def bound_total(self):

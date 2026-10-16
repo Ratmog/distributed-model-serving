@@ -4,7 +4,47 @@ Goal: produce real, reproducible numbers on two GPUs and commit them under `benc
 The headline experiment is a batching-limit change (vLLM `--max-num-seqs`) measured
 before and after under identical load. Budget roughly 2–3 GPU-hours.
 
-## 1. Get a machine
+There are two ways to run the stack: on a GPU **pod** without Docker (section A, simplest
+and usually cheapest), or on a full **VM** with Docker Compose (section B). The benchmark
+steps (3–5) are the same for both.
+
+## A. RunPod (or any GPU container) without Docker
+
+Pods are containers, so Compose cannot run inside them. `scripts/run_without_docker.sh`
+starts the same topology as `compose.gpu.yaml` as plain processes: Redis, two vLLM
+replicas pinned to GPU 0 and 1 with identical flags, the gateway, and a worker.
+
+1. **Deploy a pod** with **2 GPUs of ≥24 GB each** (RTX 4090, RTX A5000, L4, A40, or larger).
+   Use the official RunPod PyTorch template. Set container disk to ~50 GB and a
+   **volume of ~100 GB** (mounted at `/workspace`; model weights are cached there).
+   Note the hourly price shown for the pod and divide by 2 for `--gpu-hourly-cost`.
+2. **Open a terminal** on the pod (web terminal or SSH) and work inside `/workspace`:
+
+   ```bash
+   cd /workspace
+   git clone https://github.com/Ratmog/distributed-model-serving.git
+   cd distributed-model-serving
+   nvidia-smi                                  # both GPUs listed
+   scripts/run_without_docker.sh setup         # Redis, Python 3.12 env, vLLM (~5–10 min)
+   cp .env.example .env
+   ```
+
+3. **Edit `.env`:** set `MAX_INFLIGHT=128` and `MAX_NUM_SEQS=8` (the baseline). `API_KEY`
+   can stay empty because nothing is exposed outside the pod.
+4. **Start everything** (the first start downloads ~15 GB of weights):
+
+   ```bash
+   scripts/run_without_docker.sh up
+   source .venv/bin/activate
+   ```
+
+5. Run steps 3–5 below. Wherever they say to recreate the vLLM containers, instead run
+   `scripts/run_without_docker.sh restart-vllm` after editing `MAX_NUM_SEQS` in `.env`.
+6. `scripts/run_without_docker.sh status`, `logs vllm-0`, and `down` are there when needed.
+   Push your committed results to GitHub, then **terminate the pod**. A stopped pod still
+   bills for its volume.
+
+## B. A VM with Docker Compose
 
 - **A VM, not a container "pod".** Compose needs its own Docker daemon. Pick an instance
   where you get a full Linux VM with Docker and the NVIDIA Container Toolkit (or install them).
@@ -21,7 +61,7 @@ nvidia-smi                       # both GPUs listed
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-## 2. Start the stack
+### Start the stack with Compose
 
 ```bash
 git clone https://github.com/Ratmog/distributed-model-serving.git
@@ -54,7 +94,7 @@ pip install -e '.[dev,eval]'
 export API_KEY=some-long-secret
 ```
 
-Sanity-check one streamed request:
+Sanity-check one streamed request (either path; drop the header if `API_KEY` is empty):
 
 ```bash
 curl -N localhost:8000/v1/chat/completions -H "Authorization: Bearer $API_KEY" \

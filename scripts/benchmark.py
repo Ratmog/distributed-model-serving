@@ -23,7 +23,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 import load_test
 from gpu_monitor import GpuSampler, describe
 
-TRACKED_ENV = ("MODEL", "VLLM_IMAGE", "MAX_NUM_SEQS", "MAX_INFLIGHT", "WORKER_CONCURRENCY")
+TRACKED_ENV = (
+    "MODEL",
+    "VLLM_IMAGE",
+    "VLLM_VERSION",
+    "MAX_NUM_SEQS",
+    "MAX_INFLIGHT",
+    "WORKER_CONCURRENCY",
+)
 
 
 def settings(env_file=".env"):

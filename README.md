@@ -2,7 +2,7 @@
 
 A Python inference platform for learning, load testing, and measuring LLM serving behavior. FastAPI handles synchronous requests and asynchronous jobs; Redis coordinates workers; two independent vLLM replicas serve a 7B model on separate GPUs.
 
-**Status:** runnable implementation with automated CPU tests. The default backend is a clearly labeled mock. Measured GPU results live in [`benchmarks/`](benchmarks/) with full hardware and settings manifests; only numbers found there are claimed. To produce them, follow the [GPU benchmark runbook](docs/benchmarking.md).
+**Status:** runnable implementation with automated CPU tests. The default backend is a clearly labeled mock. Measured GPU results live in [`benchmarks/`](benchmarks/) with full hardware and settings manifests; only numbers found there are claimed. To produce them, follow the [GPU benchmark runbook](docs/benchmarking.md); it covers a 2-GPU VM with Compose and GPU pods without Docker (`scripts/run_without_docker.sh`).
 
 ## Architecture
 
